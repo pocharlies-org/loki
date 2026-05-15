@@ -9,6 +9,9 @@ import (
 	"github.com/go-kit/log"
 	"github.com/grafana/dskit/services"
 	"github.com/stretchr/testify/require"
+	"github.com/thanos-io/objstore"
+
+	"github.com/grafana/loki/v3/pkg/dataobj/metastore"
 )
 
 // TestPlanner_BootShutdown boots the scaffold with an in-process-only
@@ -21,9 +24,25 @@ func TestPlanner_BootShutdown(t *testing.T) {
 			Endpoint: defaultEndpoint,
 			// AdvertiseAddr left empty -> scheduler runs in-process only.
 		},
+		PollingInterval:           defaultPollingInterval,
+		MaxRunsPerTask:            defaultMaxRunsPerTask,
+		IndexMergeTaskTTL:         defaultIndexMergeTaskTTL,
+		ToCConsolidateTimeout:     defaultToCConsolidateTimeout,
+		MaxRunningCompactionTasks: defaultMaxRunningCompactionTasks,
+		PlanVersion:               defaultPlanVersion,
 	}
 
-	c, err := New(cfg, log.NewNopLogger())
+	// Coordinator deps required when Enabled = true. In-mem bucket starts
+	// empty: the coordinator's first poll sees IsObjNotFoundErr and treats
+	// it as a no-op cycle, which is exactly what we want for a smoke test.
+	bucket := objstore.NewInMemBucket()
+	tocWriter := metastore.NewTableOfContentsWriter(bucket, log.NewNopLogger())
+	c, err := New(PlannerParams{
+		Config:          cfg,
+		Bucket:          bucket,
+		MetastoreWriter: tocWriter,
+		Logger:          log.NewNopLogger(),
+	})
 	require.NoError(t, err)
 	require.NotNil(t, c.Scheduler(), "scheduler must be constructed")
 
@@ -99,8 +118,11 @@ func TestNew_InvalidAdvertiseAddr(t *testing.T) {
 			Endpoint:      defaultEndpoint,
 		},
 	}
-	_, err := New(cfg, nil)
+	// Bucket/MetastoreWriter intentionally omitted: advertise-addr resolution
+	// runs before the dep validation, so this still surfaces the expected
+	// error rather than the "bucket required" sibling.
+	_, err := New(PlannerParams{Config: cfg})
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "resolve scheduler advertise address",
+	require.Contains(t, err.Error(), "resolve advertise address",
 		"error must mention the resolution step for operator clarity, got: %v", err)
 }
