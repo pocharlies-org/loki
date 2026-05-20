@@ -1,0 +1,104 @@
+package compactor
+
+import (
+	"testing"
+	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/stretchr/testify/require"
+)
+
+// With 12h windows: current = [12:00, 24:00), previous = [00:00, 12:00).
+// "Now" pinned at 13:00; SLO = 3h ⇒ threshold = 10:00.
+var (
+	emitSLONow       = time.Date(2026, 5, 14, 13, 0, 0, 0, time.UTC)
+	emitSLOCurStart  = time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+	emitSLOPrevStart = time.Date(2026, 5, 14, 0, 0, 0, 0, time.UTC)
+	emitSLOSlo       = 3 * time.Hour
+)
+
+func TestEmitSLO_Converged(t *testing.T) {
+	current := []indexEntry{
+		{Path: "i/cur", End: emitSLOCurStart.Add(30 * time.Minute)},
+	}
+	previous := []indexEntry{
+		{Path: "i/prev", End: emitSLOPrevStart.Add(11 * time.Hour)},
+	}
+	m := newCoordinatorMetrics(prometheus.NewRegistry())
+	m.emitSLO("acme", current, previous, emitSLONow, emitSLOSlo)
+
+	require.InDelta(t, 0.0, gaugeValue(m.unconsolidatedBacklog, "acme"), 0.001)
+	require.InDelta(t, 0.0, gaugeValue(m.oldestBacklogLogAgeSeconds, "acme"), 0.001)
+	require.InDelta(t, 0.0, gaugeValue(m.prePreviousUnconsolidated, "acme"), 0.001)
+	require.InDelta(t, 1.0, gaugeValue2(m.indexesPerTenantWindow, "acme", "current"), 0.001)
+	require.InDelta(t, 1.0, gaugeValue2(m.indexesPerTenantWindow, "acme", "previous"), 0.001)
+}
+
+func TestEmitSLO_BacklogInPreviousWindow(t *testing.T) {
+	current := []indexEntry{
+		{Path: "i/cur", End: emitSLOCurStart.Add(30 * time.Minute)},
+	}
+	// threshold = 10:00. prev-a (09:00) old, prev-b (10:00) NOT old (strict <),
+	// prev-c (09:30) old. Old count = 2; backlog contribution = max(0, 2-1) = 1.
+	// Oldest old End = 09:00; age = 13:00 - 09:00 = 4h.
+	previous := []indexEntry{
+		{Path: "i/prev-a", End: emitSLOPrevStart.Add(9 * time.Hour)},
+		{Path: "i/prev-b", End: emitSLOPrevStart.Add(10 * time.Hour)},
+		{Path: "i/prev-c", End: emitSLOPrevStart.Add(9*time.Hour + 30*time.Minute)},
+	}
+	m := newCoordinatorMetrics(prometheus.NewRegistry())
+	m.emitSLO("acme", current, previous, emitSLONow, emitSLOSlo)
+
+	require.InDelta(t, 1.0, gaugeValue(m.unconsolidatedBacklog, "acme"), 0.001)
+	require.InDelta(t, (4 * time.Hour).Seconds(),
+		gaugeValue(m.oldestBacklogLogAgeSeconds, "acme"), 0.001)
+	require.InDelta(t, 1.0, gaugeValue2(m.indexesPerTenantWindow, "acme", "current"), 0.001)
+	require.InDelta(t, 3.0, gaugeValue2(m.indexesPerTenantWindow, "acme", "previous"), 0.001)
+}
+
+func TestEmitSLO_BacklogInCurrentWindow(t *testing.T) {
+	now := time.Date(2026, 5, 14, 18, 0, 0, 0, time.UTC)
+	cur := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+	// threshold = 15:00. cur-a (13:00) old & oldest, cur-b (14:00) old, cur-c (17:30) fresh.
+	current := []indexEntry{
+		{Path: "i/cur-a", End: cur.Add(1 * time.Hour)},
+		{Path: "i/cur-b", End: cur.Add(2 * time.Hour)},
+		{Path: "i/cur-c", End: cur.Add(5*time.Hour + 30*time.Minute)},
+	}
+	m := newCoordinatorMetrics(prometheus.NewRegistry())
+	m.emitSLO("acme", current, nil, now, 3*time.Hour)
+
+	require.InDelta(t, 1.0, gaugeValue(m.unconsolidatedBacklog, "acme"), 0.001)
+	require.InDelta(t, (5 * time.Hour).Seconds(),
+		gaugeValue(m.oldestBacklogLogAgeSeconds, "acme"), 0.001)
+	require.InDelta(t, 3.0, gaugeValue2(m.indexesPerTenantWindow, "acme", "current"), 0.001)
+	require.InDelta(t, 0.0, gaugeValue2(m.indexesPerTenantWindow, "acme", "previous"), 0.001)
+}
+
+func TestEmitSLO_IndexesPerTenantWindow_AlwaysExactlyTwoSeriesPerTenant(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := newCoordinatorMetrics(reg)
+	for _, tenant := range []string{"a", "b", "c"} {
+		m.emitSLO(tenant,
+			[]indexEntry{{End: emitSLOCurStart.Add(time.Hour)}},
+			[]indexEntry{{End: emitSLOPrevStart.Add(time.Hour)}},
+			emitSLONow, emitSLOSlo)
+	}
+	mfs, err := reg.Gather()
+	require.NoError(t, err)
+	var ipw int
+	for _, mf := range mfs {
+		if mf.GetName() == metricsNamespace+"_indexes_per_tenant_window" {
+			ipw = len(mf.GetMetric())
+		}
+	}
+	require.Equal(t, 6, ipw, "3 tenants × 2 window_roles = 6 series; no extra roles allowed")
+}
+
+func gaugeValue(g *prometheus.GaugeVec, labels ...string) float64 {
+	return testutil.ToFloat64(g.WithLabelValues(labels...))
+}
+func gaugeValue2(g *prometheus.GaugeVec, l1, l2 string) float64 {
+	return testutil.ToFloat64(g.WithLabelValues(l1, l2))
+}

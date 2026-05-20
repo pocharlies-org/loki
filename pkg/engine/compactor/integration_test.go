@@ -77,12 +77,14 @@ func TestCoordinator_EndToEnd(t *testing.T) {
 		},
 		metastoreWriter: tocWriter,
 		clock:           func() time.Time { return window.Add(1 * time.Hour) },
+		metrics:         newCoordinatorMetrics(prometheus.NewRegistry()),
 	}
 
 	// --- Cycle 1: 3 sources → ⌈P/K⌉ outputs ---
 	preCycle1 := mustLoadTenant(t, ctx, bucket, window, "acme")
 	require.Len(t, preCycle1, 3, "sanity: 3 source indexes seeded")
-	require.NoError(t, c.runTenantCycle(ctx, "acme", window, preCycle1))
+	_, err := c.runTenantCycle(ctx, "acme", window, preCycle1)
+	require.NoError(t, err)
 
 	postCycle1 := mustLoadTenants(t, ctx, bucket, window)
 	require.Less(t, len(postCycle1["acme"]), 3,
@@ -116,7 +118,8 @@ func TestCoordinator_EndToEnd(t *testing.T) {
 	// --- Cycle 2: drive against the post-swap ToC. Should converge further. ---
 	indexesC2 := mustLoadTenant(t, ctx, bucket, window, "acme")
 	if len(indexesC2) > 1 {
-		require.NoError(t, c.runTenantCycle(ctx, "acme", window, indexesC2))
+		_, err := c.runTenantCycle(ctx, "acme", window, indexesC2)
+		require.NoError(t, err)
 		postCycle2 := mustLoadTenants(t, ctx, bucket, window)
 		t.Logf("cycle 2: acme went from %d → %d indexes", len(indexesC2), len(postCycle2["acme"]))
 		require.LessOrEqual(t, len(postCycle2["acme"]), len(postCycle1["acme"]),
@@ -130,7 +133,8 @@ func TestCoordinator_EndToEnd(t *testing.T) {
 		if len(acmeIdx) <= 1 {
 			break
 		}
-		require.NoError(t, c.runTenantCycle(ctx, "acme", window, acmeIdx))
+		_, err := c.runTenantCycle(ctx, "acme", window, acmeIdx)
+		require.NoError(t, err)
 		t.Logf("convergence loop iter %d: acme → %d indexes", i,
 			len(mustLoadTenant(t, ctx, bucket, window, "acme")))
 	}

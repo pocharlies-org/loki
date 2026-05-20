@@ -2457,9 +2457,9 @@ func (t *Loki) initDataObjCompactionPlanner() (services.Service, error) {
 	if err != nil {
 		return nil, err
 	}
-  // Wrap with the same IndexStoragePrefix the dataobj-index-builder uses so
-  // compactor outputs and ToC reads land alongside the existing multi-tenant
-  // indexes namespace.
+	// Wrap with the same IndexStoragePrefix the dataobj-index-builder uses so
+	// compactor outputs and ToC reads land alongside the existing multi-tenant
+	// indexes namespace.
 	indexBucket := store
 	if prefix := t.Cfg.DataObj.Metastore.IndexStoragePrefix; prefix != "" {
 		indexBucket = objstore.NewPrefixedBucket(store, prefix)
@@ -2471,6 +2471,7 @@ func (t *Loki) initDataObjCompactionPlanner() (services.Service, error) {
 		Bucket:          indexBucket,
 		MetastoreWriter: tocWriter,
 		Logger:          logger,
+		Registerer:      prometheus.DefaultRegisterer,
 	})
 	if err != nil {
 		return nil, err

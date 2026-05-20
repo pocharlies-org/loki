@@ -2,11 +2,13 @@ package compactor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/thanos-io/objstore"
 	"golang.org/x/sync/errgroup"
 
@@ -46,7 +48,8 @@ type coordinator struct {
 	metastoreWriter tocReplacer
 	// clock is injected so tests can pin the current time; production
 	// wiring sets it to time.Now.
-	clock func() time.Time
+	clock   func() time.Time
+	metrics *coordinatorMetrics
 }
 
 // newCoordinator constructs a coordinator wired to a real
@@ -59,6 +62,7 @@ func newCoordinator(
 	bucket objstore.Bucket,
 	runner workflow.Runner,
 	metastoreWriter *metastore.TableOfContentsWriter,
+	reg prometheus.Registerer,
 ) *coordinator {
 	return &coordinator{
 		cfg:    cfg,
@@ -69,6 +73,7 @@ func newCoordinator(
 		},
 		metastoreWriter: metastoreWriter,
 		clock:           time.Now,
+		metrics:         newCoordinatorMetrics(reg),
 	}
 }
 
@@ -106,57 +111,87 @@ func (c *coordinator) Run(ctx context.Context) error {
 // re-planning against the post-swap ToC.
 func (c *coordinator) runCycle(ctx context.Context) {
 	start := c.clock()
-	window := start.UTC().Truncate(metastore.MetastoreWindowSize)
+	currentWindow := start.UTC().Truncate(metastore.MetastoreWindowSize)
+	previousWindow := currentWindow.Add(-metastore.MetastoreWindowSize)
 
-	indexes, err := loadTenantIndexes(ctx, c.bucket, window)
+	currentIdx, err := loadTenantIndexes(ctx, c.bucket, currentWindow)
 	if err != nil {
-		if c.bucket.IsObjNotFoundErr(err) {
-			level.Debug(c.logger).Log("msg", "no ToC for current window", "window", window)
+		if !c.bucket.IsObjNotFoundErr(err) {
+			level.Warn(c.logger).Log("msg", "cycle aborted: load current ToC",
+				"window", currentWindow, "err", err)
 			return
 		}
-		level.Warn(c.logger).Log("msg", "cycle aborted: load tenant indexes",
-			"window", window, "err", err)
-		return
+		level.Debug(c.logger).Log("msg", "no ToC for current window", "window", currentWindow)
+		currentIdx = tenantIndexes{}
 	}
-	if len(indexes) == 0 {
-		level.Debug(c.logger).Log("msg", "cycle: no tenants in ToC", "window", window)
+
+	// Previous window is optional; missing is normal at cluster bootstrap.
+	previousIdx, err := loadTenantIndexes(ctx, c.bucket, previousWindow)
+	if err != nil {
+		if c.bucket.IsObjNotFoundErr(err) {
+			level.Debug(c.logger).Log("msg", "no ToC for previous window", "window", previousWindow)
+		} else {
+			level.Warn(c.logger).Log("msg", "load previous ToC for SLI (best-effort)",
+				"window", previousWindow, "err", err)
+		}
+		previousIdx = tenantIndexes{}
+	}
+
+	// Union tenants from both windows so a tenant present only in previous
+	// (e.g., stopped writing) still gets observability.
+	allTenants := make(map[string]struct{}, len(currentIdx)+len(previousIdx))
+	for t := range currentIdx {
+		allTenants[t] = struct{}{}
+	}
+	for t := range previousIdx {
+		allTenants[t] = struct{}{}
+	}
+	if len(allTenants) == 0 {
+		level.Debug(c.logger).Log("msg", "cycle: no tenants in any ToC", "window", currentWindow)
 		return
 	}
 
 	var (
-		converged = 0 // tenants skipped via the <=1 gate
-		compacted = 0 // tenants whose runTenantCycle returned nil
-		failed    = 0 // tenants whose runTenantCycle returned an error
+		converged = 0
+		compacted = 0
+		failed    = 0
 	)
-	for tenant, entries := range indexes {
-		if len(entries) <= 1 {
+	for tenant := range allTenants {
+		curEntries := currentIdx[tenant]
+		prevEntries := previousIdx[tenant]
+
+		// Compaction work runs only on current-window entries; previous-window
+		// data is observed for SLI purposes only.
+		if len(curEntries) <= 1 {
 			level.Debug(c.logger).Log("msg", "cycle: tenant converged, skipping",
-				"tenant", tenant, "indexes", len(entries))
+				"tenant", tenant, "indexes", len(curEntries))
 			converged++
-			continue
+		} else {
+			postEntries, terr := c.runTenantCycle(ctx, tenant, currentWindow, curEntries)
+			if terr != nil {
+				level.Warn(c.logger).Log("msg", "tenant cycle failed",
+					"tenant", tenant, "window", currentWindow, "err", terr)
+				failed++
+			} else {
+				compacted++
+				curEntries = postEntries
+			}
 		}
-		if err := c.runTenantCycle(ctx, tenant, window, entries); err != nil {
-			level.Warn(c.logger).Log("msg", "tenant cycle failed",
-				"tenant", tenant, "window", window, "err", err)
-			failed++
-			// Continue with next tenant
-			continue
-		}
-		compacted++
+
+		c.metrics.emitSLO(tenant, curEntries, prevEntries, c.clock(), c.cfg.ConsolidationSLO)
 	}
 
 	duration := c.clock().Sub(start)
 	level.Info(c.logger).Log(
 		"msg", "cycle complete",
-		"window", window,
+		"window", currentWindow,
 		"duration", duration,
-		"tenants_total", len(indexes),
+		"tenants_total", len(allTenants),
 		"tenants_compacted", compacted,
 		"tenants_converged", converged,
 		"tenants_failed", failed,
 	)
 
-	//TODO(twhitney): will want a metric for this
 	if duration > c.cfg.PollingInterval {
 		level.Warn(c.logger).Log(
 			"msg", "cycle duration exceeded polling interval; next tick will be dropped",
@@ -168,23 +203,24 @@ func (c *coordinator) runCycle(ctx context.Context) {
 
 // runTenantCycle performs the per-(tenant, window) compaction.
 //
-// Returned errors are wrapped for the caller; (swapped=false, err=nil) from
-// ReplaceIndexPointers is treated as success because it signals either a
-// race-loss to a sibling coordinator or that the cycle's source paths were
-// already removed by a previous cycle.
+// Returns the entries after compaction (which may differ from input on success)
+// and any error. Returned errors are wrapped for the caller; (swapped=false,
+// err=nil) from ReplaceIndexPointers is treated as success because it signals
+// either a race-loss to a sibling coordinator or that the cycle's source paths
+// were already removed by a previous cycle.
 func (c *coordinator) runTenantCycle(
 	ctx context.Context,
 	tenant string,
 	window time.Time,
 	entries []indexEntry,
-) error {
+) ([]indexEntry, error) {
 	// Plan.
 	sections := sectionRefsFor(entries)
 	tasks := v2.Plan(ctx, sections, tenant, c.cfg.MaxRunsPerTask)
 	if len(tasks) == 0 {
 		level.Debug(c.logger).Log("msg", "tenant cycle: planner produced no tasks",
 			"tenant", tenant, "window", window)
-		return nil
+		return nil, nil
 	}
 
 	// Compute deterministic output paths per task.
@@ -208,7 +244,7 @@ func (c *coordinator) runTenantCycle(
 		})
 	}
 	if err := g.Wait(); err != nil {
-		return fmt.Errorf("phase1: %w", err)
+		return nil, fmt.Errorf("phase1: %w", err)
 	}
 
 	// Replace index pointers with new indexes
@@ -222,14 +258,23 @@ func (c *coordinator) runTenantCycle(
 	defer cancel()
 	swapped, err := c.metastoreWriter.ReplaceIndexPointers(phase2Ctx, window, tenant, oldPaths, newEntries)
 	if err != nil {
-		return fmt.Errorf("phase2 ReplaceIndexPointers: %w", err)
+		if errors.Is(err, metastore.ErrReplaceRetriesExhausted) {
+			c.metrics.incRetryExhausted(tenant)
+		}
+		return nil, fmt.Errorf("phase2 ReplaceIndexPointers: %w", err)
 	}
 	if !swapped {
-		// Race-loss or already-converged: treated as success. The next
-		// cycle re-plans against the post-swap ToC.
+		// Race-loss or already-converged: treated as success. Keep the
+		// pre-cycle view since we didn't actually swap.
 		level.Debug(c.logger).Log("msg", "phase2 race-loss / already-converged",
 			"tenant", tenant, "window", window)
-		return nil
+		return entries, nil
+	}
+
+	// Construct post-swap entries for the caller.
+	postEntries := make([]indexEntry, len(newEntries))
+	for i, e := range newEntries {
+		postEntries[i] = indexEntry{Path: e.Path, Start: e.StartTime, End: e.EndTime}
 	}
 	level.Info(c.logger).Log("msg", "tenant cycle complete",
 		"tenant", tenant, "window", window,
@@ -237,7 +282,7 @@ func (c *coordinator) runTenantCycle(
 		"removed_indexes", len(oldPaths),
 		"added_indexes", len(outputs),
 	)
-	return nil
+	return postEntries, nil
 }
 
 // taskSectionIDs returns canonical "<ObjectPath>#<SectionIndex>" IDs for

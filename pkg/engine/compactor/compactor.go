@@ -8,6 +8,7 @@ import (
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
 	"github.com/grafana/dskit/services"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/thanos-io/objstore"
 
 	"github.com/grafana/loki/v3/pkg/dataobj/metastore"
@@ -25,6 +26,11 @@ type PlannerParams struct {
 	Bucket          objstore.Bucket                  // required when Config.Enabled = true
 	MetastoreWriter *metastore.TableOfContentsWriter // required when Config.Enabled = true
 	Logger          log.Logger
+	// Registerer is where the coordinator-side metrics are registered. May
+	// be nil; promauto.With(nil) constructs metrics that are never registered
+	// (see promauto/auto.go's `if f.r != nil` guard), which is fine for tests
+	// but silently disables metric export in production.
+	Registerer prometheus.Registerer
 }
 
 // Planner is the dataobj-compaction-planner target service. It hosts an
@@ -77,6 +83,7 @@ func New(params PlannerParams) (*Planner, error) {
 			params.Bucket,
 			sched.inner,
 			params.MetastoreWriter,
+			params.Registerer,
 		)
 	}
 	p.BasicService = services.NewBasicService(p.starting, p.running, p.stopping)

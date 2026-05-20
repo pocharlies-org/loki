@@ -3,11 +3,14 @@ package compactor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/go-kit/log"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/require"
 	"github.com/thanos-io/objstore"
 
@@ -101,6 +104,7 @@ func newTestCoordinator(t *testing.T, bucket objstore.Bucket, runner *fakeRunner
 		runPlan:         runner.run,
 		metastoreWriter: replacer,
 		clock:           clock,
+		metrics:         newCoordinatorMetrics(prometheus.NewRegistry()),
 	}
 }
 
@@ -236,7 +240,8 @@ func TestRunTenantCycle_RaceLossIsSuccess(t *testing.T) {
 	// runCycle swallows per-tenant errors; check directly via the lower API.
 	indexes, err := loadTenantIndexes(ctx, bucket, window)
 	require.NoError(t, err)
-	require.NoError(t, c.runTenantCycle(ctx, "acme", window, indexes["acme"]))
+	_, err = c.runTenantCycle(ctx, "acme", window, indexes["acme"])
+	require.NoError(t, err)
 }
 
 // TestRunTenantCycle_HardSwapErrorPropagates verifies that a non-nil error
@@ -262,7 +267,7 @@ func TestRunTenantCycle_HardSwapErrorPropagates(t *testing.T) {
 
 	indexes, err := loadTenantIndexes(ctx, bucket, window)
 	require.NoError(t, err)
-	err = c.runTenantCycle(ctx, "acme", window, indexes["acme"])
+	_, err = c.runTenantCycle(ctx, "acme", window, indexes["acme"])
 	require.ErrorIs(t, err, swapErr)
 }
 
@@ -280,4 +285,58 @@ func TestRunCycle_NoToC(t *testing.T) {
 
 	require.Empty(t, runner.snapshot())
 	require.Empty(t, replacer.snapshot())
+}
+
+func TestRunTenantCycle_RetryExhaustedIncrementsCounter(t *testing.T) {
+	ctx := context.Background()
+	bucket := objstore.NewInMemBucket()
+	window := time.Date(2026, 5, 14, 0, 0, 0, 0, time.UTC).Truncate(metastore.MetastoreWindowSize)
+
+	writeToCWithIndexes(t, ctx, bucket, map[string][]testIndex{
+		"acme": {
+			{path: "indexes/aa/src-0", start: window.Add(1 * time.Hour), end: window.Add(2 * time.Hour)},
+			{path: "indexes/bb/src-1", start: window.Add(3 * time.Hour), end: window.Add(4 * time.Hour)},
+		},
+	})
+
+	runner := &fakeRunner{}
+	replacer := &fakeReplacer{
+		swapped: false,
+		err:     fmt.Errorf("%w: bucket 412", metastore.ErrReplaceRetriesExhausted),
+	}
+	c := newTestCoordinator(t, bucket, runner, replacer, fixedClock(window.Add(1*time.Hour)))
+
+	idx, err := loadTenantIndexes(ctx, bucket, window)
+	require.NoError(t, err)
+	_, err = c.runTenantCycle(ctx, "acme", window, idx["acme"])
+	require.Error(t, err)
+	require.ErrorIs(t, err, metastore.ErrReplaceRetriesExhausted)
+	require.InDelta(t, 1.0,
+		testutil.ToFloat64(c.metrics.tocSwapRetryExhaustedTotal.WithLabelValues("acme")), 0.001,
+		"retry-exhausted error must increment the counter")
+}
+
+func TestRunTenantCycle_OtherErrorDoesNotIncrementCounter(t *testing.T) {
+	ctx := context.Background()
+	bucket := objstore.NewInMemBucket()
+	window := time.Date(2026, 5, 14, 0, 0, 0, 0, time.UTC).Truncate(metastore.MetastoreWindowSize)
+
+	writeToCWithIndexes(t, ctx, bucket, map[string][]testIndex{
+		"acme": {
+			{path: "indexes/aa/src-0", start: window.Add(1 * time.Hour), end: window.Add(2 * time.Hour)},
+			{path: "indexes/bb/src-1", start: window.Add(3 * time.Hour), end: window.Add(4 * time.Hour)},
+		},
+	})
+
+	runner := &fakeRunner{}
+	replacer := &fakeReplacer{swapped: false, err: errors.New("transient network blip")}
+	c := newTestCoordinator(t, bucket, runner, replacer, fixedClock(window.Add(1*time.Hour)))
+
+	idx, err := loadTenantIndexes(ctx, bucket, window)
+	require.NoError(t, err)
+	_, err = c.runTenantCycle(ctx, "acme", window, idx["acme"])
+	require.Error(t, err)
+	require.InDelta(t, 0.0,
+		testutil.ToFloat64(c.metrics.tocSwapRetryExhaustedTotal.WithLabelValues("acme")), 0.001,
+		"non-exhaustion errors must NOT increment the counter")
 }
