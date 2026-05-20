@@ -1636,6 +1636,13 @@ dataobj:
     # CLI flag: -dataobj.compaction.toc-consolidate-timeout
     [toc_consolidate_timeout: <duration> | default = 30s]
 
+    # Experimental: v1.0 consolidation SLO target. Indexes older than this whose
+    # per-source content has not yet been folded into the per-(tenant, window)
+    # covering index contribute to the
+    # loki_dataobj_compaction_unconsolidated_index_backlog gauge.
+    # CLI flag: -dataobj.compaction.consolidation-slo
+    [consolidation_slo: <duration> | default = 3h]
+
     # Experimental: Plan version hashed into IndexMerge output paths. Bump to
     # invalidate previously-written outputs after a planner-algorithm change.
     # CLI flag: -dataobj.compaction.plan-version
