@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	stderrors "errors"
+	"fmt"
 	"io"
 	"time"
 
@@ -38,6 +39,13 @@ var replaceBackoffConfig = backoff.Config{
 // signal "do not write". It is consumed by replaceIndexPointers and converted
 // to (false, nil); it never escapes the package.
 var errReplaceNoOp = stderrors.New("replace-index-pointers: no-op")
+
+// ErrReplaceRetriesExhausted wraps the underlying retry-loop error when
+// ReplaceIndexPointers exhausts its backoff budget without succeeding. The
+// dataobj compactor coordinator keys off this sentinel to drive the
+// loki_dataobj_compaction_toc_swap_retry_exhausted_total counter
+// (orphan-rate proxy).
+var ErrReplaceRetriesExhausted = stderrors.New("replace-index-pointers: retries exhausted")
 
 // ReplaceIndexPointers atomically swaps a set of index pointers in the
 // ToC for the given window. For the target tenant, every row in oldPaths
@@ -210,7 +218,10 @@ func (m *TableOfContentsWriter) replaceIndexPointers(
 	if lastErr == nil {
 		lastErr = b.Err()
 	}
-	return false, lastErr
+	// Wrap with the sentinel so callers can distinguish retry-exhaustion
+	// (orphan-producing) from transient errors that succeed on retry inside
+	// the backoff loop and never reach here.
+	return false, fmt.Errorf("%w: %w", ErrReplaceRetriesExhausted, lastErr)
 }
 
 // scanForMatches reports whether any row in any section of obj is owned by

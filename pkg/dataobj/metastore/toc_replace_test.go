@@ -405,6 +405,8 @@ func TestReplaceIndexPointers_RetryExhaustion(t *testing.T) {
 		[]string{"idx/a-0"}, nil, tightBackoff,
 	)
 	require.Error(t, err)
+	require.ErrorIs(t, err, ErrReplaceRetriesExhausted,
+		"retry-budget exhaustion must be reported via the sentinel so the coordinator can drive the orphan-rate counter")
 	require.ErrorIs(t, err, errPreconditionFailed)
 	require.False(t, swapped)
 }
