@@ -28,6 +28,7 @@ func TestPlanner_BootShutdown(t *testing.T) {
 		MaxRunsPerTask:            defaultMaxRunsPerTask,
 		IndexMergeTaskTTL:         defaultIndexMergeTaskTTL,
 		ToCConsolidateTimeout:     defaultToCConsolidateTimeout,
+		ConsolidationSLO:          defaultConsolidationSLO,
 		MaxRunningCompactionTasks: defaultMaxRunningCompactionTasks,
 		PlanVersion:               defaultPlanVersion,
 	}
@@ -76,6 +77,7 @@ func TestConfig_Validate_EnabledRejectsBadValues(t *testing.T) {
 			Enabled:                   true,
 			MaxRunningCompactionTasks: -1,
 			Scheduler:                 SchedulerConfig{Endpoint: defaultEndpoint},
+			ConsolidationSLO:          defaultConsolidationSLO,
 		}
 		err := cfg.Validate()
 		require.Error(t, err)
@@ -84,8 +86,9 @@ func TestConfig_Validate_EnabledRejectsBadValues(t *testing.T) {
 
 	t.Run("empty scheduler endpoint", func(t *testing.T) {
 		cfg := Config{
-			Enabled:   true,
-			Scheduler: SchedulerConfig{Endpoint: ""},
+			Enabled:          true,
+			Scheduler:        SchedulerConfig{Endpoint: ""},
+			ConsolidationSLO: defaultConsolidationSLO,
 		}
 		err := cfg.Validate()
 		require.Error(t, err)
@@ -101,6 +104,7 @@ func TestConfig_Validate_EnabledRejectsBadValues(t *testing.T) {
 			MaxRunsPerTask:            defaultMaxRunsPerTask,
 			IndexMergeTaskTTL:         defaultIndexMergeTaskTTL,
 			ToCConsolidateTimeout:     defaultToCConsolidateTimeout,
+			ConsolidationSLO:          defaultConsolidationSLO,
 			PlanVersion:               defaultPlanVersion,
 		}
 		require.NoError(t, cfg.Validate())
@@ -117,6 +121,7 @@ func TestNew_InvalidAdvertiseAddr(t *testing.T) {
 			AdvertiseAddr: "not-a-valid-host:port:::",
 			Endpoint:      defaultEndpoint,
 		},
+		ConsolidationSLO: defaultConsolidationSLO,
 	}
 	// Bucket/MetastoreWriter intentionally omitted: advertise-addr resolution
 	// runs before the dep validation, so this still surfaces the expected

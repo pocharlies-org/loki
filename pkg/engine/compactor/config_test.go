@@ -3,6 +3,7 @@ package compactor
 import (
 	"flag"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -42,4 +43,49 @@ func TestConfig_ValidateHappyPath_WithNewKnobs(t *testing.T) {
 	cfg.RegisterFlags(flag.NewFlagSet("test", flag.ContinueOnError))
 	cfg.Enabled = true
 	require.NoError(t, cfg.Validate())
+}
+
+func TestConfig_Validate_ConsolidationSLO(t *testing.T) {
+	base := Config{
+		Enabled:                   true,
+		MaxRunningCompactionTasks: 1,
+		PollingInterval:           5 * time.Minute,
+		MaxRunsPerTask:            8,
+		IndexMergeTaskTTL:         10 * time.Minute,
+		ToCConsolidateTimeout:     30 * time.Second,
+		ConsolidationSLO:          3 * time.Hour,
+		PlanVersion:               1,
+		Scheduler:                 SchedulerConfig{Endpoint: "/x"},
+	}
+
+	t.Run("valid 3h passes", func(t *testing.T) {
+		require.NoError(t, base.Validate())
+	})
+
+	t.Run("zero fails when enabled", func(t *testing.T) {
+		c := base
+		c.ConsolidationSLO = 0
+		require.ErrorIs(t, c.Validate(), errInvalidConsolidationSLO)
+	})
+
+	t.Run("negative fails when enabled", func(t *testing.T) {
+		c := base
+		c.ConsolidationSLO = -time.Second
+		require.ErrorIs(t, c.Validate(), errInvalidConsolidationSLO)
+	})
+
+	t.Run("zero passes when disabled", func(t *testing.T) {
+		c := base
+		c.Enabled = false
+		c.ConsolidationSLO = 0
+		require.NoError(t, c.Validate())
+	})
+
+	t.Run("default after RegisterFlags is 3h", func(t *testing.T) {
+		var c Config
+		f := flag.NewFlagSet("test", flag.PanicOnError)
+		c.RegisterFlags(f)
+		require.NoError(t, f.Parse(nil))
+		require.Equal(t, 3*time.Hour, c.ConsolidationSLO)
+	})
 }

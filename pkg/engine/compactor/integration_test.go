@@ -65,6 +65,7 @@ func TestCoordinator_EndToEnd(t *testing.T) {
 			MaxRunsPerTask:            2,
 			IndexMergeTaskTTL:         10 * time.Second,
 			ToCConsolidateTimeout:     10 * time.Second,
+			ConsolidationSLO:          3 * time.Hour,
 			MaxRunningCompactionTasks: 4,
 			PlanVersion:               1,
 			Scheduler:                 SchedulerConfig{Endpoint: defaultEndpoint},

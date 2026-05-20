@@ -49,6 +49,15 @@ type Config struct {
 	// MB) and the conditional-PUT path is fast.
 	ToCConsolidateTimeout time.Duration `yaml:"toc_consolidate_timeout"`
 
+	// ConsolidationSLO is the v1.0 product SLO target for log-write-to-
+	// consolidation latency. Any log written has its per-source index folded
+	// into the single covering index for its (tenant, ToC window) within this
+	// duration. Drives the loki_dataobj_compaction_unconsolidated_index_backlog
+	// + loki_dataobj_compaction_oldest_backlog_log_age_seconds gauges. Default
+	// 3h. Tune up for cheap-tier tenants, down for tenants paying for tighter
+	// query-time index counts.
+	ConsolidationSLO time.Duration `yaml:"consolidation_slo"`
+
 	// PlanVersion is hashed into IndexMerge output paths so a planner
 	// change invalidates previously-written outputs. Bump on any
 	// breaking change to the planner or merge semantics. Stored as uint
@@ -134,6 +143,7 @@ const (
 	defaultMaxRunsPerTask        = 8
 	defaultIndexMergeTaskTTL     = 10 * time.Minute
 	defaultToCConsolidateTimeout = 30 * time.Second
+	defaultConsolidationSLO      = 3 * time.Hour
 	defaultPlanVersion           = uint(1)
 )
 
@@ -159,6 +169,8 @@ func (cfg *Config) RegisterFlagsWithPrefix(prefix string, f *flag.FlagSet) {
 		"Experimental: Per-IndexMerge-task deadline.")
 	f.DurationVar(&cfg.ToCConsolidateTimeout, prefix+"toc-consolidate-timeout", defaultToCConsolidateTimeout,
 		"Experimental: Coordinator-side timeout around the inline ToC ReplaceIndexPointers call. Not a task TTL.")
+	f.DurationVar(&cfg.ConsolidationSLO, prefix+"consolidation-slo", defaultConsolidationSLO,
+		"Experimental: v1.0 consolidation SLO target. Indexes older than this whose per-source content has not yet been folded into the per-(tenant, window) covering index contribute to the loki_dataobj_compaction_unconsolidated_index_backlog gauge.")
 	f.UintVar(&cfg.PlanVersion, prefix+"plan-version", defaultPlanVersion,
 		"Experimental: Plan version hashed into IndexMerge output paths. Bump to invalidate previously-written outputs after a planner-algorithm change.")
 	f.StringVar(&cfg.Scheduler.AdvertiseAddr, prefix+"scheduler.advertise-addr", "",
@@ -207,6 +219,9 @@ func (cfg *Config) Validate() error {
 	if cfg.MaxRunsPerTask <= 0 {
 		return errInvalidMaxRunsPerTask
 	}
+	if cfg.ConsolidationSLO <= 0 {
+		return errInvalidConsolidationSLO
+	}
 	return nil
 }
 
@@ -219,4 +234,5 @@ var (
 	errInvalidIndexMergeTaskTTL         = errors.New("dataobj.compaction.index_merge_task_ttl must be > 0 when compaction is enabled")
 	errInvalidToCConsolidateTimeout     = errors.New("dataobj.compaction.toc_consolidate_timeout must be > 0 when compaction is enabled")
 	errInvalidMaxRunsPerTask            = errors.New("dataobj.compaction.max_runs_per_task must be > 0 when compaction is enabled")
+	errInvalidConsolidationSLO          = errors.New("dataobj.compaction.consolidation_slo must be > 0 when compaction is enabled")
 )
