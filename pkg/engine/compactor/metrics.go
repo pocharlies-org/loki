@@ -83,10 +83,13 @@ func (m *coordinatorMetrics) emitSLO(
 
 	var oldestAge float64
 	if backlog > 0 {
-		if !curOldest.IsZero() {
+		// Only windows that contribute >0 to backlog contribute to oldestAge.
+		// A window with exactly one old entry holds the converged-target
+		// baseline; its End is the covering index's End, not a backlog entry.
+		if curOld >= 2 && !curOldest.IsZero() {
 			oldestAge = now.Sub(curOldest).Seconds()
 		}
-		if !prevOldest.IsZero() {
+		if prevOld >= 2 && !prevOldest.IsZero() {
 			if age := now.Sub(prevOldest).Seconds(); age > oldestAge {
 				oldestAge = age
 			}

@@ -178,7 +178,7 @@ func (c *coordinator) runCycle(ctx context.Context) {
 			}
 		}
 
-		c.metrics.emitSLO(tenant, curEntries, prevEntries, c.clock(), c.cfg.ConsolidationSLO)
+		c.metrics.emitSLO(tenant, curEntries, prevEntries, start, c.cfg.ConsolidationSLO)
 	}
 
 	duration := c.clock().Sub(start)
@@ -220,7 +220,11 @@ func (c *coordinator) runTenantCycle(
 	if len(tasks) == 0 {
 		level.Debug(c.logger).Log("msg", "tenant cycle: planner produced no tasks",
 			"tenant", tenant, "window", window)
-		return nil, nil
+		// No tasks: nothing changed, so return the input entries unchanged
+		// (mirroring the !swapped race-loss path). Reaching this branch with
+		// len(entries) > 1 is unreachable under v2.Plan's current contract,
+		// but the symmetric return shields emitSLO from receiving nil entries.
+		return entries, nil
 	}
 
 	// Compute deterministic output paths per task.

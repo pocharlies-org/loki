@@ -340,3 +340,50 @@ func TestRunTenantCycle_OtherErrorDoesNotIncrementCounter(t *testing.T) {
 		testutil.ToFloat64(c.metrics.tocSwapRetryExhaustedTotal.WithLabelValues("acme")), 0.001,
 		"non-exhaustion errors must NOT increment the counter")
 }
+
+// TestRunCycle_TenantOnlyInPreviousWindow asserts that a tenant present only
+// in the previous-window ToC (e.g., one that stopped writing) still emits
+// SLO gauges — no Phase 1 dispatch, no Phase 2 swap, but the gauges fire.
+func TestRunCycle_TenantOnlyInPreviousWindow(t *testing.T) {
+	ctx := context.Background()
+	bucket := objstore.NewInMemBucket()
+	// "Now" is inside current window; previous window holds an entry for tenant
+	// "stopped".
+	currentWindow := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC).Truncate(metastore.MetastoreWindowSize)
+	previousWindow := currentWindow.Add(-metastore.MetastoreWindowSize)
+
+	writeToCWithIndexes(t, ctx, bucket, map[string][]testIndex{
+		"current-tenant": {
+			{path: "indexes/aa/now-0", start: currentWindow.Add(1 * time.Hour), end: currentWindow.Add(2 * time.Hour)},
+		},
+	})
+	writeToCWithIndexesAtWindow(t, ctx, bucket, previousWindow, map[string][]testIndex{
+		"stopped": {
+			{path: "indexes/old/idx-0", start: previousWindow.Add(1 * time.Hour), end: previousWindow.Add(2 * time.Hour)},
+			{path: "indexes/old/idx-1", start: previousWindow.Add(3 * time.Hour), end: previousWindow.Add(4 * time.Hour)},
+		},
+	})
+
+	runner := &fakeRunner{}
+	replacer := &fakeReplacer{}
+	c := newTestCoordinator(t, bucket, runner, replacer,
+		fixedClock(currentWindow.Add(1*time.Hour)))
+
+	c.runCycle(ctx)
+
+	require.Empty(t, runner.snapshot(),
+		"stopped tenant has only previous-window entries; no Phase 1 must dispatch")
+	require.Empty(t, replacer.snapshot(),
+		"stopped tenant has no current-window entries; no Phase 2 must run")
+
+	// SLO gauges emitted for both tenants.
+	require.InDelta(t, 1.0,
+		testutil.ToFloat64(c.metrics.indexesPerTenantWindow.WithLabelValues("current-tenant", "current")), 0.001)
+	require.InDelta(t, 0.0,
+		testutil.ToFloat64(c.metrics.indexesPerTenantWindow.WithLabelValues("current-tenant", "previous")), 0.001)
+	require.InDelta(t, 0.0,
+		testutil.ToFloat64(c.metrics.indexesPerTenantWindow.WithLabelValues("stopped", "current")), 0.001)
+	require.InDelta(t, 2.0,
+		testutil.ToFloat64(c.metrics.indexesPerTenantWindow.WithLabelValues("stopped", "previous")), 0.001,
+		"stopped tenant must still get observability via the previous-window union")
+}

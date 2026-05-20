@@ -403,10 +403,9 @@ func TestCoordinator_OrphanReuse_OnePathDriftsPerAddition(t *testing.T) {
 			require.Equal(t, 1, fresh,
 				"exactly one path must drift (the task containing the run G extended); got fresh=%d", fresh)
 
-			// The drifted path is at binIndex=tc.driftIdx. The capture order
-			// inside an errgroup is not ordered, but the cycle-N path at the
-			// expected drift index is the one that's NOT in capturedN1's intersection.
-			// Reconstruct the drift index by checking which cycle-N path went missing.
+			// Reconstruct which cycle-N path went missing in cycle N+1 by
+			// set-difference. The runPlan capture order is non-deterministic
+			// (errgroup goroutines), so we can't rely on positional indices.
 			cycleN1Set := make(map[string]struct{}, len(capturedN1))
 			for _, p := range capturedN1 {
 				cycleN1Set[p] = struct{}{}
@@ -419,8 +418,6 @@ func TestCoordinator_OrphanReuse_OnePathDriftsPerAddition(t *testing.T) {
 				}
 			}
 			require.GreaterOrEqual(t, missingFromN1, 0, "exactly one cycle-N path must be missing from cycle N+1")
-
-
 
 			// The cycle-N orphan at the drifted path is now dead bytes in the
 			// bucket — present, but not referenced by the post-swap ToC. Verify

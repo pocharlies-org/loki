@@ -76,6 +76,39 @@ func TestEmitSLO_BacklogInCurrentWindow(t *testing.T) {
 	require.InDelta(t, 0.0, gaugeValue2(m.indexesPerTenantWindow, "acme", "previous"), 0.001)
 }
 
+// TestEmitSLO_BaselineEntryDoesNotInflateOldestAge pins that a window holding
+// a single old entry (the converged covering index) does not contribute to
+// the oldest_backlog_log_age_seconds metric, even when the other window has
+// a real backlog. The baseline entry is discounted from the backlog formula
+// (`max(0, oldCount-1) == 0`), so it must also be excluded from the age
+// calculation.
+func TestEmitSLO_BaselineEntryDoesNotInflateOldestAge(t *testing.T) {
+	// Current window's single entry is OLD (e.g., a long-sealed previous
+	// cycle's covering index). It's the baseline; backlog contribution = 0.
+	// Threshold at 10:00 (now=13:00, slo=3h).
+	current := []indexEntry{
+		// End = -5h ⇒ 5h before threshold (very old, but baseline).
+		{Path: "i/cur-baseline", End: emitSLONow.Add(-5 * time.Hour)},
+	}
+	// Previous window has a real backlog: 3 old entries, oldest at 4h ago
+	// (1h before threshold).
+	previous := []indexEntry{
+		{Path: "i/prev-a", End: emitSLONow.Add(-4 * time.Hour)},
+		{Path: "i/prev-b", End: emitSLONow.Add(-3*time.Hour - 30*time.Minute)},
+		{Path: "i/prev-c", End: emitSLONow.Add(-3*time.Hour - 15*time.Minute)},
+	}
+	m := newCoordinatorMetrics(prometheus.NewRegistry())
+	m.emitSLO("acme", current, previous, emitSLONow, emitSLOSlo)
+
+	// backlog = max(0,1-1) + max(0,3-1) = 0 + 2 = 2 (all from previous).
+	require.InDelta(t, 2.0, gaugeValue(m.unconsolidatedBacklog, "acme"), 0.001)
+	// oldestAge must reflect the previous window's oldest (4h), NOT the
+	// current window's baseline (5h).
+	require.InDelta(t, (4 * time.Hour).Seconds(),
+		gaugeValue(m.oldestBacklogLogAgeSeconds, "acme"), 0.001,
+		"current-window single old entry is the baseline; it must NOT inflate oldestAge")
+}
+
 func TestEmitSLO_IndexesPerTenantWindow_AlwaysExactlyTwoSeriesPerTenant(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m := newCoordinatorMetrics(reg)

@@ -95,6 +95,13 @@ type testIndex struct {
 // MetastoreWindowSize window the ToC covers (otherwise WriteEntry will route
 // it to a different ToC file).
 func writeToCWithIndexes(t *testing.T, ctx context.Context, bucket objstore.Bucket, entries map[string][]testIndex) {
+	currentWindow := time.Now().UTC().Truncate(metastore.MetastoreWindowSize)
+	writeToCWithIndexesAtWindow(t, ctx, bucket, currentWindow, entries)
+}
+
+// writeToCWithIndexesAtWindow is writeToCWithIndexes but for a caller-specified
+// window. Used by tests exercising the previous-window load path.
+func writeToCWithIndexesAtWindow(t *testing.T, ctx context.Context, bucket objstore.Bucket, window time.Time, entries map[string][]testIndex) {
 	t.Helper()
 	w := metastore.NewTableOfContentsWriter(bucket, log.NewNopLogger())
 	for tenant, paths := range entries {
