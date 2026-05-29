@@ -62,7 +62,9 @@ type NamedAWSStorageConfig aws.S3Config
 // UnmarshalYAML implements the yaml.Unmarshaler interface.
 func (cfg *NamedAWSStorageConfig) UnmarshalYAML(value *yaml.Node) error {
 	flagext.DefaultValues((*aws.S3Config)(cfg))
-	return value.Decode((*aws.S3Config)(cfg))
+	// We always want strict config parsing
+	// See https://github.com/yaml/go-yaml/issues/321 and https://github.com/yaml/go-yaml/pull/332
+	return value.Load((*aws.S3Config)(cfg), yaml.WithKnownFields(true))
 }
 
 func (cfg *NamedAWSStorageConfig) Validate() error {
@@ -74,7 +76,9 @@ type NamedBlobStorageConfig azure.BlobStorageConfig
 // UnmarshalYAML implements the yaml.Unmarshaler interface.
 func (cfg *NamedBlobStorageConfig) UnmarshalYAML(value *yaml.Node) error {
 	flagext.DefaultValues((*azure.BlobStorageConfig)(cfg))
-	return value.Decode((*azure.BlobStorageConfig)(cfg))
+	// We always want strict config parsing
+	// See https://github.com/yaml/go-yaml/issues/321 and https://github.com/yaml/go-yaml/pull/332
+	return value.Load((*azure.BlobStorageConfig)(cfg), yaml.WithKnownFields(true))
 }
 
 func (cfg *NamedBlobStorageConfig) Validate() error {
@@ -86,7 +90,9 @@ type NamedBOSStorageConfig baidubce.BOSStorageConfig
 // UnmarshalYAML implements the yaml.Unmarshaler interface.
 func (cfg *NamedBOSStorageConfig) UnmarshalYAML(value *yaml.Node) error {
 	flagext.DefaultValues((*baidubce.BOSStorageConfig)(cfg))
-	return value.Decode((*baidubce.BOSStorageConfig)(cfg))
+	// We always want strict config parsing
+	// See https://github.com/yaml/go-yaml/issues/321 and https://github.com/yaml/go-yaml/pull/332
+	return value.Load((*baidubce.BOSStorageConfig)(cfg), yaml.WithKnownFields(true))
 }
 
 type NamedFSConfig local.FSConfig
@@ -94,7 +100,9 @@ type NamedFSConfig local.FSConfig
 // UnmarshalYAML implements the yaml.Unmarshaler interface.
 func (cfg *NamedFSConfig) UnmarshalYAML(value *yaml.Node) error {
 	flagext.DefaultValues((*local.FSConfig)(cfg))
-	return value.Decode((*local.FSConfig)(cfg))
+	// We always want strict config parsing
+	// See https://github.com/yaml/go-yaml/issues/321 and https://github.com/yaml/go-yaml/pull/332
+	return value.Load((*local.FSConfig)(cfg), yaml.WithKnownFields(true))
 }
 
 type NamedGCSConfig gcp.GCSConfig
@@ -102,7 +110,9 @@ type NamedGCSConfig gcp.GCSConfig
 // UnmarshalYAML implements the yaml.Unmarshaler interface.
 func (cfg *NamedGCSConfig) UnmarshalYAML(value *yaml.Node) error {
 	flagext.DefaultValues((*gcp.GCSConfig)(cfg))
-	return value.Decode((*gcp.GCSConfig)(cfg))
+	// We always want strict config parsing
+	// See https://github.com/yaml/go-yaml/issues/321 and https://github.com/yaml/go-yaml/pull/332
+	return value.Load((*gcp.GCSConfig)(cfg), yaml.WithKnownFields(true))
 }
 
 type NamedOssConfig alibaba.OssConfig
@@ -110,7 +120,9 @@ type NamedOssConfig alibaba.OssConfig
 // UnmarshalYAML implements the yaml.Unmarshaler interface.
 func (cfg *NamedOssConfig) UnmarshalYAML(value *yaml.Node) error {
 	flagext.DefaultValues((*alibaba.OssConfig)(cfg))
-	return value.Decode((*alibaba.OssConfig)(cfg))
+	// We always want strict config parsing
+	// See https://github.com/yaml/go-yaml/issues/321 and https://github.com/yaml/go-yaml/pull/332
+	return value.Load((*alibaba.OssConfig)(cfg), yaml.WithKnownFields(true))
 }
 
 type NamedSwiftConfig openstack.SwiftConfig
@@ -118,7 +130,9 @@ type NamedSwiftConfig openstack.SwiftConfig
 // UnmarshalYAML implements the yaml.Unmarshaler interface.
 func (cfg *NamedSwiftConfig) UnmarshalYAML(value *yaml.Node) error {
 	flagext.DefaultValues((*openstack.SwiftConfig)(cfg))
-	return value.Decode((*openstack.SwiftConfig)(cfg))
+	// We always want strict config parsing
+	// See https://github.com/yaml/go-yaml/issues/321 and https://github.com/yaml/go-yaml/pull/332
+	return value.Load((*openstack.SwiftConfig)(cfg), yaml.WithKnownFields(true))
 }
 
 func (cfg *NamedSwiftConfig) Validate() error {
@@ -130,7 +144,9 @@ type NamedCOSConfig ibmcloud.COSConfig
 // UnmarshalYAML implements the yaml.Unmarshaler interface.
 func (cfg *NamedCOSConfig) UnmarshalYAML(value *yaml.Node) error {
 	flagext.DefaultValues((*ibmcloud.COSConfig)(cfg))
-	return value.Decode((*ibmcloud.COSConfig)(cfg))
+	// We always want strict config parsing
+	// See https://github.com/yaml/go-yaml/issues/321 and https://github.com/yaml/go-yaml/pull/332
+	return value.Load((*ibmcloud.COSConfig)(cfg), yaml.WithKnownFields(true))
 }
 
 // NamedStores helps configure additional object stores from a given storage provider
